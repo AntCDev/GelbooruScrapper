@@ -14,6 +14,7 @@ namespace GelbooruArchiver
 
         private static long _totalDownloadedBytes = 0;
         private static int _filesProcessed = 0;
+        private static DateTime _startTime;
 
         static async Task Main(string[] args)
         {
@@ -22,7 +23,7 @@ namespace GelbooruArchiver
             string userId = "";
             string saveDir = @"G:\GelBooru";
             double maxSizeGb = 100;
-            int maxConcurrency = 16; 
+            int maxConcurrency = 16;
 
             for (int i = 0; i < args.Length; i++)
             {
@@ -43,10 +44,13 @@ namespace GelbooruArchiver
             _httpClient.DefaultRequestHeaders.Add("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36");
             _httpClient.DefaultRequestHeaders.Add("Referer", "https://gelbooru.com/");
 
+            _startTime = DateTime.Now;
+
             Console.WriteLine($"Target directory: {saveDir}");
             Console.WriteLine($"Size limit: {maxSizeGb} GB");
             Console.WriteLine($"Tags: {tags}");
-            Console.WriteLine($"Concurrency: {maxConcurrency} simultaneous downloads\n");
+            Console.WriteLine($"Concurrency: {maxConcurrency} simultaneous downloads");
+            Console.WriteLine($"Started at: {_startTime:yyyy-MM-dd HH:mm:ss}\n");
 
             using var cts = new CancellationTokenSource();
 
@@ -72,7 +76,12 @@ namespace GelbooruArchiver
                 Console.WriteLine($"\n[FATAL ERROR] {ex.Message}");
             }
 
-            Console.WriteLine($"\nFinished! Processed {_filesProcessed} files. Total size: {(double)_totalDownloadedBytes / (1024 * 1024 * 1024):F4} GB");
+            double totalGb = (double)_totalDownloadedBytes / (1024 * 1024 * 1024);
+            double elapsedMin = (DateTime.Now - _startTime).TotalMinutes;
+            double avgRate = elapsedMin > 0 ? _filesProcessed / elapsedMin : 0;
+
+            Console.WriteLine($"\nFinished! Processed {_filesProcessed} files. Total size: {totalGb:F4} GB");
+            Console.WriteLine($"Average rate: {avgRate:F1} img/min over {elapsedMin:F1} minutes");
         }
 
         static async IAsyncEnumerable<JsonElement> FetchPostsAsync(string tags, string apiKey, string userId, [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken token)
@@ -91,14 +100,25 @@ namespace GelbooruArchiver
 
                 List<JsonElement> currentBatch = new List<JsonElement>();
                 bool endOfPosts = false;
+                string responseContent = null;
 
                 try
                 {
                     HttpResponseMessage response = await _httpClient.GetAsync(url, token);
-                    response.EnsureSuccessStatusCode();
+                    responseContent = await response.Content.ReadAsStringAsync(token);
 
-                    string jsonResponse = await response.Content.ReadAsStringAsync(token);
-                    using JsonDocument doc = JsonDocument.Parse(jsonResponse);
+                    if (!response.IsSuccessStatusCode)
+                    {
+                        Console.WriteLine($"[HTTP ERROR] Page {pid}: {(int)response.StatusCode} ({response.StatusCode})");
+                        string preview = responseContent?.Length > 0
+                            ? responseContent.Substring(0, Math.Min(500, responseContent.Length)).Replace("\r\n", " ").Replace("\n", " ").Trim()
+                            : "(empty response)";
+                        Console.WriteLine($"   Preview: {preview}");
+                        await Task.Delay(5000, token);
+                        continue;
+                    }
+
+                    using JsonDocument doc = JsonDocument.Parse(responseContent);
 
                     if (!doc.RootElement.TryGetProperty("post", out JsonElement postsArray) || postsArray.GetArrayLength() == 0)
                     {
@@ -113,10 +133,21 @@ namespace GelbooruArchiver
                         }
                     }
                 }
+                catch (JsonException jex)
+                {
+                    Console.WriteLine($"[JSON PARSE ERROR] Page {pid}: {jex.Message}");
+                    if (responseContent != null)
+                    {
+                        string preview = responseContent.Substring(0, Math.Min(300, responseContent.Length));
+                        Console.WriteLine($"   Response started with: '{preview}'");
+                    }
+                    await Task.Delay(3000, token);
+                    continue;
+                }
                 catch (Exception ex)
                 {
-                    Console.WriteLine($"Error fetching page {pid}: {ex.Message}");
-                    await Task.Delay(2000, token);
+                    Console.WriteLine($"[FETCH ERROR] Page {pid}: {ex.GetType().Name} - {ex.Message}");
+                    await Task.Delay(3000, token);
                     continue;
                 }
 
@@ -168,7 +199,10 @@ namespace GelbooruArchiver
 
                 if (currentCount % 50 == 0)
                 {
-                    Console.WriteLine($"[{currentCount} files] Downloaded: {(double)newSize / (1024 * 1024 * 1024):F4} GB");
+                    double elapsedMinutes = (DateTime.Now - _startTime).TotalMinutes;
+                    double rate = elapsedMinutes > 0 ? currentCount / elapsedMinutes : 0;
+
+                    Console.WriteLine($"[{DateTime.Now:HH:mm:ss}] [{currentCount} files] Downloaded: {(double)newSize / (1024 * 1024 * 1024):F4} GB | Rate: {rate:F1} img/min");
                 }
 
                 if (newSize >= maxSizeBytes)
@@ -176,8 +210,9 @@ namespace GelbooruArchiver
                     cts.Cancel();
                 }
             }
-            catch (Exception)
+            catch (Exception ex)
             {
+                Console.WriteLine($"[DOWNLOAD ERROR] {filename}: {ex.Message}");
             }
         }
     }
