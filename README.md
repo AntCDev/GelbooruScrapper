@@ -18,7 +18,7 @@ The default concurrency is **16**, which is generally safe enough to avoid trigg
 The tool is designed to be run from the Windows Command Prompt (CMD) or PowerShell.
 
 ### Syntax
-GelbooruScrapper.exe -t "TAGS" -k API_KEY -u USER_ID -d "DRIVE:\\PATH" -s MAX_SIZE_GB -c CONCURRENCY
+GelbooruScrapper.exe -t "TAGS" -k API_KEY -u USER_ID -d "DRIVE:\\PATH" -s MAX_SIZE_GB -c CONCURRENCY -to TIMEOUT_SECONDS
 
 ### Arguments
 
@@ -30,3 +30,4 @@ GelbooruScrapper.exe -t "TAGS" -k API_KEY -u USER_ID -d "DRIVE:\\PATH" -s MAX_SI
 | `-d` | `--dir` | The target directory to save images and JSON metadata. | `G:\\GelBooru` |
 | `-s` | `--size` | Maximum total download size in Gigabytes (GB) before stopping. | `100` |
 | `-c` | `--concurrency` | Number of simultaneous image downloads. | `16` |
+| `-to` | `--timeout` | Seconds before a request timeouts. | `100` |
