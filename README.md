@@ -1,4 +1,4 @@
-# Gelbooru Archiver
+# Gelbooru Scrapper
 
 A high-performance, asynchronous command-line tool built in C# for archiving images and metadata from Gelbooru. 
 
