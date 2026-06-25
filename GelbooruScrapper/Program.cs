@@ -56,16 +56,7 @@ namespace GelbooruArchiver
 
             try
             {
-                var options = new ParallelOptions
-                {
-                    MaxDegreeOfParallelism = maxConcurrency,
-                    CancellationToken = cts.Token
-                };
-
-                await Parallel.ForEachAsync(FetchPostsAsync(tags, apiKey, userId, cts.Token), options, async (post, token) =>
-                {
-                    await ProcessAndDownloadPostAsync(post, saveDir, maxSizeBytes, cts);
-                });
+                await RunLockstepArchiverAsync(tags, apiKey, userId, saveDir, maxSizeBytes, maxConcurrency, cts);
             }
             catch (OperationCanceledException)
             {
@@ -84,13 +75,19 @@ namespace GelbooruArchiver
             Console.WriteLine($"Average rate: {avgRate:F1} img/min over {elapsedMin:F1} minutes");
         }
 
-        static async IAsyncEnumerable<JsonElement> FetchPostsAsync(string tags, string apiKey, string userId, [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken token)
+        static async Task RunLockstepArchiverAsync(string tags, string apiKey, string userId, string saveDir, long maxSizeBytes, int maxConcurrency, CancellationTokenSource cts)
         {
             string formattedOriginalTags = tags.Trim().Replace(" ", "+");
             string currentSearchTags = formattedOriginalTags;
             int pid = 0;
 
-            while (!token.IsCancellationRequested)
+            var parallelOptions = new ParallelOptions
+            {
+                MaxDegreeOfParallelism = maxConcurrency,
+                CancellationToken = cts.Token
+            };
+
+            while (!cts.IsCancellationRequested)
             {
                 string url = $"https://gelbooru.com/index.php?page=dapi&s=post&q=index&json=1&limit=100&pid={pid}&tags={currentSearchTags}";
                 if (!string.IsNullOrEmpty(apiKey) && !string.IsNullOrEmpty(userId))
@@ -98,107 +95,39 @@ namespace GelbooruArchiver
                     url += $"&api_key={apiKey}&user_id={userId}";
                 }
 
-                List<JsonElement> currentBatch = new List<JsonElement>();
-                string responseContent = null;
+                List<JsonElement> currentBatch = await FetchPageWithRetryAsync(url, pid, cts.Token);
 
-                bool fetchFailed = false;
-                bool noMorePosts = false;
-                long minIdInBatch = long.MaxValue;
-                int delayMs = 0;
-
-                try
+                if (currentBatch == null || currentBatch.Count == 0)
                 {
-                    HttpResponseMessage response = await _httpClient.GetAsync(url, token);
-                    responseContent = await response.Content.ReadAsStringAsync(token);
-
-                    if (!response.IsSuccessStatusCode)
-                    {
-                        Console.WriteLine($"[HTTP ERROR] pid={pid} | Status: {(int)response.StatusCode}");
-                        string preview = responseContent?.Length > 0
-                            ? responseContent.Substring(0, Math.Min(300, responseContent.Length)).Replace("\n", " ")
-                            : "(empty)";
-                        Console.WriteLine($"   Preview: {preview}");
-
-                        fetchFailed = true;
-                        delayMs = 5000;
-                    }
-                    else
-                    {
-                        using JsonDocument doc = JsonDocument.Parse(responseContent);
-
-                        if (!doc.RootElement.TryGetProperty("post", out JsonElement postsArray) || postsArray.GetArrayLength() == 0)
-                        {
-                            noMorePosts = true;
-                        }
-                        else
-                        {
-                            foreach (JsonElement post in postsArray.EnumerateArray())
-                            {
-                                currentBatch.Add(post.Clone());
-
-                                if (post.TryGetProperty("id", out JsonElement idEl) && idEl.TryGetInt64(out long id))
-                                {
-                                    if (id < minIdInBatch) minIdInBatch = id;
-                                }
-                            }
-                        }
-                    }
-                }
-                catch (JsonException jex)
-                {
-                    Console.WriteLine($"[JSON PARSE ERROR] pid={pid}: {jex.Message}");
-                    if (responseContent != null)
-                    {
-                        string preview = responseContent.Substring(0, Math.Min(200, responseContent.Length));
-                        Console.WriteLine($"   Started with: '{preview}'");
-                    }
-                    fetchFailed = true;
-                    delayMs = 3000;
-                }
-                catch (Exception ex)
-                {
-                    Console.WriteLine($"[FETCH ERROR] pid={pid}: {ex.Message}");
-                    fetchFailed = true;
-                    delayMs = 3000;
+                    Console.WriteLine("\n[INFO] No more posts in current ID range. Finished.");
+                    break;
                 }
 
-
-                if (fetchFailed)
+                await Parallel.ForEachAsync(currentBatch, parallelOptions, async (post, token) =>
                 {
-                    await Task.Delay(delayMs, token);
-                    continue;
-                }
-
-                if (noMorePosts)
-                {
-                    Console.WriteLine("[INFO] No more posts in current ID range. Finished.");
-                    yield break;
-                }
-
-                foreach (JsonElement post in currentBatch)
-                {
-                    yield return post;
-                }
+                    await ProcessAndDownloadPostAsync(post, saveDir, maxSizeBytes, cts);
+                });
 
                 if (currentBatch.Count < 100)
                 {
                     Console.WriteLine("\n[INFO] Reached the end of the results.");
-                    yield break;
+                    break;
                 }
 
                 if (pid >= 199)
                 {
+                    long minIdInBatch = GetMinIdFromBatch(currentBatch);
+
                     if (minIdInBatch != long.MaxValue)
                     {
-                        currentSearchTags = formattedOriginalTags + "+id:<" + minIdInBatch;
+                        currentSearchTags = $"{formattedOriginalTags}+id:<{minIdInBatch}";
                         pid = 0;
                         Console.WriteLine($"\n[INFO] Pagination limit reached. Switched to next ID range → id:<{minIdInBatch}");
                         Console.WriteLine($"       New search tags: {currentSearchTags}\n");
                     }
                     else
                     {
-                        // Fallback just in case minIdInBatch wasn't set
-                        yield break;
+                        break;
                     }
                 }
                 else
@@ -206,6 +135,59 @@ namespace GelbooruArchiver
                     pid++;
                 }
             }
+        }
+
+        static async Task<List<JsonElement>> FetchPageWithRetryAsync(string url, int pid, CancellationToken token)
+        {
+            int retries = 3;
+            while (retries > 0 && !token.IsCancellationRequested)
+            {
+                try
+                {
+                    HttpResponseMessage response = await _httpClient.GetAsync(url, token);
+                    string responseContent = await response.Content.ReadAsStringAsync(token);
+
+                    if (!response.IsSuccessStatusCode)
+                    {
+                        Console.WriteLine($"[HTTP ERROR] pid={pid} | Status: {(int)response.StatusCode}");
+                        retries--;
+                        await Task.Delay(3000, token);
+                        continue;
+                    }
+
+                    using JsonDocument doc = JsonDocument.Parse(responseContent);
+                    List<JsonElement> batch = new List<JsonElement>();
+
+                    if (doc.RootElement.TryGetProperty("post", out JsonElement postsArray) && postsArray.GetArrayLength() > 0)
+                    {
+                        foreach (JsonElement post in postsArray.EnumerateArray())
+                        {
+                            batch.Add(post.Clone());
+                        }
+                    }
+                    return batch;
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"[FETCH ERROR] pid={pid}: {ex.Message}");
+                    retries--;
+                    await Task.Delay(3000, token);
+                }
+            }
+            return null;
+        }
+
+        static long GetMinIdFromBatch(List<JsonElement> batch)
+        {
+            long minId = long.MaxValue;
+            foreach (var post in batch)
+            {
+                if (post.TryGetProperty("id", out JsonElement idEl) && idEl.TryGetInt64(out long id))
+                {
+                    if (id < minId) minId = id;
+                }
+            }
+            return minId;
         }
 
         static async Task ProcessAndDownloadPostAsync(JsonElement post, string saveDir, long maxSizeBytes, CancellationTokenSource cts)
@@ -240,7 +222,7 @@ namespace GelbooruArchiver
                 long newSize = Interlocked.Add(ref _totalDownloadedBytes, imageBytes.Length + jsonString.Length);
                 int currentCount = Interlocked.Increment(ref _filesProcessed);
 
-                if (currentCount % 50 == 0)
+                if (currentCount % 100 == 0)
                 {
                     double elapsedMinutes = (DateTime.Now - _startTime).TotalMinutes;
                     double rate = elapsedMinutes > 0 ? currentCount / elapsedMinutes : 0;
