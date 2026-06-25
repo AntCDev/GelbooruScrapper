@@ -18,7 +18,7 @@ The default concurrency is **16**, which is generally safe enough to avoid trigg
 The tool is designed to be run from the Windows Command Prompt (CMD) or PowerShell.
 
 ### Syntax
-GelbooruArchiver.exe -t "TAGS" -k API_KEY -u USER_ID -d "DRIVE:\\PATH" -s MAX_SIZE_GB -c CONCURRENCY
+GelbooruScrapper.exe -t "TAGS" -k API_KEY -u USER_ID -d "DRIVE:\\PATH" -s MAX_SIZE_GB -c CONCURRENCY
 
 ### Arguments
 
