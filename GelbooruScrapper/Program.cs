@@ -224,7 +224,15 @@ namespace GelbooruArchiver
                 if (imgResponse.Content.Headers.ContentType?.MediaType?.Contains("text/html") == true) return;
 
                 byte[] imageBytes = await imgResponse.Content.ReadAsByteArrayAsync(cts.Token);
-                string jsonString = JsonSerializer.Serialize(post, new JsonSerializerOptions { WriteIndented = true });
+                string jsonString;
+                using (var stream = new MemoryStream())
+                {
+                    using (var writer = new Utf8JsonWriter(stream, new JsonWriterOptions { Indented = true }))
+                    {
+                        post.WriteTo(writer);
+                    }
+                    jsonString = System.Text.Encoding.UTF8.GetString(stream.ToArray());
+                }
 
                 await File.WriteAllBytesAsync(finalFilepath, imageBytes, cts.Token);
                 await File.WriteAllTextAsync(jsonFilepath, jsonString, cts.Token);
