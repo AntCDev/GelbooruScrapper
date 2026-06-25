@@ -86,21 +86,25 @@ namespace GelbooruArchiver
 
         static async IAsyncEnumerable<JsonElement> FetchPostsAsync(string tags, string apiKey, string userId, [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken token)
         {
+            string formattedOriginalTags = tags.Trim().Replace(" ", "+");
+            string currentSearchTags = formattedOriginalTags;
             int pid = 0;
-            string formattedTags = tags.Trim().Replace(" ", "+");
-            string baseUrl = "https://gelbooru.com/index.php";
 
             while (!token.IsCancellationRequested)
             {
-                string url = $"{baseUrl}?page=dapi&s=post&q=index&json=1&limit=100&pid={pid}&tags={formattedTags}";
+                string url = $"https://gelbooru.com/index.php?page=dapi&s=post&q=index&json=1&limit=100&pid={pid}&tags={currentSearchTags}";
                 if (!string.IsNullOrEmpty(apiKey) && !string.IsNullOrEmpty(userId))
                 {
                     url += $"&api_key={apiKey}&user_id={userId}";
                 }
 
                 List<JsonElement> currentBatch = new List<JsonElement>();
-                bool endOfPosts = false;
                 string responseContent = null;
+
+                bool fetchFailed = false;
+                bool noMorePosts = false;
+                long minIdInBatch = long.MaxValue;
+                int delayMs = 0;
 
                 try
                 {
@@ -109,50 +113,65 @@ namespace GelbooruArchiver
 
                     if (!response.IsSuccessStatusCode)
                     {
-                        Console.WriteLine($"[HTTP ERROR] Page {pid}: {(int)response.StatusCode} ({response.StatusCode})");
+                        Console.WriteLine($"[HTTP ERROR] pid={pid} | Status: {(int)response.StatusCode}");
                         string preview = responseContent?.Length > 0
-                            ? responseContent.Substring(0, Math.Min(500, responseContent.Length)).Replace("\r\n", " ").Replace("\n", " ").Trim()
-                            : "(empty response)";
+                            ? responseContent.Substring(0, Math.Min(300, responseContent.Length)).Replace("\n", " ")
+                            : "(empty)";
                         Console.WriteLine($"   Preview: {preview}");
-                        await Task.Delay(5000, token);
-                        continue;
-                    }
 
-                    using JsonDocument doc = JsonDocument.Parse(responseContent);
-
-                    if (!doc.RootElement.TryGetProperty("post", out JsonElement postsArray) || postsArray.GetArrayLength() == 0)
-                    {
-                        Console.WriteLine("\nReached the end of available posts.");
-                        endOfPosts = true;
+                        fetchFailed = true;
+                        delayMs = 5000;
                     }
                     else
                     {
-                        foreach (JsonElement post in postsArray.EnumerateArray())
+                        using JsonDocument doc = JsonDocument.Parse(responseContent);
+
+                        if (!doc.RootElement.TryGetProperty("post", out JsonElement postsArray) || postsArray.GetArrayLength() == 0)
                         {
-                            currentBatch.Add(post.Clone());
+                            noMorePosts = true;
+                        }
+                        else
+                        {
+                            foreach (JsonElement post in postsArray.EnumerateArray())
+                            {
+                                currentBatch.Add(post.Clone());
+
+                                if (post.TryGetProperty("id", out JsonElement idEl) && idEl.TryGetInt64(out long id))
+                                {
+                                    if (id < minIdInBatch) minIdInBatch = id;
+                                }
+                            }
                         }
                     }
                 }
                 catch (JsonException jex)
                 {
-                    Console.WriteLine($"[JSON PARSE ERROR] Page {pid}: {jex.Message}");
+                    Console.WriteLine($"[JSON PARSE ERROR] pid={pid}: {jex.Message}");
                     if (responseContent != null)
                     {
-                        string preview = responseContent.Substring(0, Math.Min(300, responseContent.Length));
-                        Console.WriteLine($"   Response started with: '{preview}'");
+                        string preview = responseContent.Substring(0, Math.Min(200, responseContent.Length));
+                        Console.WriteLine($"   Started with: '{preview}'");
                     }
-                    await Task.Delay(3000, token);
-                    continue;
+                    fetchFailed = true;
+                    delayMs = 3000;
                 }
                 catch (Exception ex)
                 {
-                    Console.WriteLine($"[FETCH ERROR] Page {pid}: {ex.GetType().Name} - {ex.Message}");
-                    await Task.Delay(3000, token);
+                    Console.WriteLine($"[FETCH ERROR] pid={pid}: {ex.Message}");
+                    fetchFailed = true;
+                    delayMs = 3000;
+                }
+
+
+                if (fetchFailed)
+                {
+                    await Task.Delay(delayMs, token);
                     continue;
                 }
 
-                if (endOfPosts)
+                if (noMorePosts)
                 {
+                    Console.WriteLine("[INFO] No more posts in current ID range. Finished.");
                     yield break;
                 }
 
@@ -161,7 +180,31 @@ namespace GelbooruArchiver
                     yield return post;
                 }
 
-                pid++;
+                if (currentBatch.Count < 100)
+                {
+                    Console.WriteLine("\n[INFO] Reached the end of the results.");
+                    yield break;
+                }
+
+                if (pid >= 199)
+                {
+                    if (minIdInBatch != long.MaxValue)
+                    {
+                        currentSearchTags = formattedOriginalTags + "+id:<" + minIdInBatch;
+                        pid = 0;
+                        Console.WriteLine($"\n[INFO] Pagination limit reached. Switched to next ID range → id:<{minIdInBatch}");
+                        Console.WriteLine($"       New search tags: {currentSearchTags}\n");
+                    }
+                    else
+                    {
+                        // Fallback just in case minIdInBatch wasn't set
+                        yield break;
+                    }
+                }
+                else
+                {
+                    pid++;
+                }
             }
         }
 
