@@ -16,6 +16,9 @@ namespace GelbooruArchiver
         private static int _filesProcessed = 0;
         private static DateTime _startTime;
 
+        // Thread lock for safely writing to the error log from multiple parallel tasks
+        private static readonly object _logLock = new object();
+
         static async Task Main(string[] args)
         {
             string tags = "1girl";
@@ -24,7 +27,9 @@ namespace GelbooruArchiver
             string saveDir = @"G:\GelBooru";
             double maxSizeGb = 100;
             int maxConcurrency = 16;
+            int timeoutSeconds = 100; // Default timeout
 
+            // Parse args
             for (int i = 0; i < args.Length; i++)
             {
                 switch (args[i].ToLower())
@@ -35,12 +40,15 @@ namespace GelbooruArchiver
                     case "-d": case "--dir": saveDir = args[++i]; break;
                     case "-s": case "--size": maxSizeGb = double.Parse(args[++i]); break;
                     case "-c": case "--concurrency": maxConcurrency = int.Parse(args[++i]); break;
+                    case "-to": case "--timeout": timeoutSeconds = int.Parse(args[++i]); break;
                 }
             }
 
             long maxSizeBytes = (long)(maxSizeGb * 1024 * 1024 * 1024);
             Directory.CreateDirectory(saveDir);
 
+            // Apply the custom timeout to the HttpClient
+            _httpClient.Timeout = TimeSpan.FromSeconds(timeoutSeconds);
             _httpClient.DefaultRequestHeaders.Add("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36");
             _httpClient.DefaultRequestHeaders.Add("Referer", "https://gelbooru.com/");
 
@@ -50,6 +58,7 @@ namespace GelbooruArchiver
             Console.WriteLine($"Size limit: {maxSizeGb} GB");
             Console.WriteLine($"Tags: {tags}");
             Console.WriteLine($"Concurrency: {maxConcurrency} simultaneous downloads");
+            Console.WriteLine($"Timeout: {timeoutSeconds} seconds");
             Console.WriteLine($"Started at: {_startTime:yyyy-MM-dd HH:mm:ss}\n");
 
             using var cts = new CancellationTokenSource();
@@ -204,6 +213,7 @@ namespace GelbooruArchiver
             string jsonFilepath = Path.Combine(saveDir, $"{baseName}.json");
             string finalFilepath = Path.Combine(saveDir, filename);
 
+            // Skip logic: if both files exist, skip the download completely.
             if (File.Exists(finalFilepath) && File.Exists(jsonFilepath)) return;
 
             try
@@ -237,7 +247,23 @@ namespace GelbooruArchiver
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"[DOWNLOAD ERROR] {filename}: {ex.Message}");
+                string postId = post.TryGetProperty("id", out JsonElement idEl) ? idEl.ToString() : "UNKNOWN_ID";
+                Console.WriteLine($"[DOWNLOAD ERROR] Post ID: {postId} | File: {filename}: {ex.Message}");
+                LogFailedDownload(post, filename, saveDir, ex.Message);
+            }
+        }
+
+        static void LogFailedDownload(JsonElement post, string filename, string saveDir, string errorMessage)
+        {
+            string postId = post.TryGetProperty("id", out JsonElement idEl) ? idEl.ToString() : "UNKNOWN_ID";
+            string logFilePath = Path.Combine(saveDir, "failed_downloads.log");
+
+            string logEntry = $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss}] Post ID: {postId} | File: {filename} | Error: {errorMessage}{Environment.NewLine}";
+
+            // Lock ensures multiple parallel threads don't collide when writing to the text file
+            lock (_logLock)
+            {
+                File.AppendAllText(logFilePath, logEntry);
             }
         }
     }
