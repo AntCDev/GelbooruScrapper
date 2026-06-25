@@ -31,3 +31,34 @@ GelbooruScrapper.exe -t "TAGS" -k API_KEY -u USER_ID -d "DRIVE:\\PATH" -s MAX_SI
 | `-s` | `--size` | Maximum total download size in Gigabytes (GB) before stopping. | `100` |
 | `-c` | `--concurrency` | Number of simultaneous image downloads. | `16` |
 | `-to` | `--timeout` | Seconds before a request timeouts. | `100` |
+
+## Linux Usage
+The Linux binary does not have an extension (it is just named `GelbooruScrapper_linux-64`). Before running it for the first time, you must grant it execution permissions.
+
+1. Open your terminal and navigate to the folder containing the downloaded file.
+2. Run the following command to make the file executable:
+```bash
+   chmod +x GelbooruScrapper_linux-64
+```
+3. Run the application using `./`. Ensure your target directory path uses **forward slashes (`/`)**:
+```bash
+  ./GelbooruScrapper_linux-64 -t "1girl" -d "/home/username/GelBooru" -s 100
+```
+
+## macOS Usage
+
+Like Linux, the macOS binary has no file extension and runs entirely via the Terminal.
+
+1. Open your terminal and navigate to the folder containing the downloaded file.
+2. Grant the file execution permissions:
+```bash
+  chmod +x GelbooruScrapper_osx-arm64
+```
+3. **Bypass Apple Gatekeeper:** Because this binary isn't digitally signed through an Apple Developer account, macOS will likely block it from running with a "developer cannot be verified" warning. You can strip Apple's quarantine flag by running:
+```bash
+  xattr -d com.apple.quarantine GelbooruScrapper_osx-arm64
+```
+4. Run the application using `./` and **forward slashes (`/`)** for paths:
+```bash
+   ./GelbooruScrapper_osx-arm64 -t "1girl" -d "/Users/username/GelBooru" -s 100
+```
