@@ -6,6 +6,7 @@ using System.Net.Http;
 using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
+using System.Text.Json.Serialization;
 
 namespace GelbooruArchiver
 {
@@ -122,7 +123,7 @@ namespace GelbooruArchiver
                 try
                 {
                     string json = File.ReadAllText(_trackerFilePath);
-                    var loadedDict = JsonSerializer.Deserialize<Dictionary<long, string>>(json);
+                    var loadedDict = JsonSerializer.Deserialize(json, TrackerJsonContext.Default.DictionaryInt64String);
                     if (loadedDict != null)
                     {
                         _downloadTracker = new ConcurrentDictionary<long, string>(loadedDict);
@@ -142,7 +143,12 @@ namespace GelbooruArchiver
                 try
                 {
                     var dictToSave = new Dictionary<long, string>(_downloadTracker);
-                    string json = JsonSerializer.Serialize(dictToSave, new JsonSerializerOptions { WriteIndented = true });
+                    var options = new JsonSerializerOptions
+                    {
+                        WriteIndented = true,
+                        TypeInfoResolver = TrackerJsonContext.Default
+                    };
+                    string json = JsonSerializer.Serialize(dictToSave, options);
                     File.WriteAllText(_trackerFilePath, json);
                 }
                 catch (Exception ex)
@@ -357,5 +363,11 @@ namespace GelbooruArchiver
                 File.AppendAllText(logFilePath, logEntry);
             }
         }
+    }
+
+
+[JsonSerializable(typeof(Dictionary<long, string>))]
+    internal partial class TrackerJsonContext : JsonSerializerContext
+    {
     }
 }
